@@ -56,9 +56,10 @@ class SimpleDenoiseNN(nn.Module):
 
     def forward(self, x):
         x = self.input_layers(x)
-        res = self.hidden_layers(x)
-        res = self.output_layers(res)
-        return res
+        y = self.hidden_layers(x)
+        y += x
+        y = self.output_layers(y)
+        return y
 
 
 def cal_psnr(img1, img2):
