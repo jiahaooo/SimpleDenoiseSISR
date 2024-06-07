@@ -12,6 +12,8 @@ import torch.nn as nn
 
 matplotlib.use('Agg')
 
+device = torch.device('cuda')
+
 
 def mkdir(path):
     if not os.path.exists(path):
@@ -75,11 +77,11 @@ def main():
     mkdir('denoising')
     epoch_num = 4
     print_interval = 100
-    validate_interval = 500
+    validate_interval = 200
     savemodel_interval = 2000
     train_loader = DataLoader(Dataset_Denoise('minist_dataset/train'), batch_size=4, num_workers=4, shuffle=True, drop_last=True, pin_memory=False)
     val_loader = DataLoader(Dataset_Denoise('minist_dataset/val'), batch_size=1, num_workers=1, shuffle=False, drop_last=False, pin_memory=False)
-    net = SimpleDenoiseNN()
+    net = SimpleDenoiseNN().to(device)
     optim_params = []
     for k, v in net.named_parameters():
         if v.requires_grad:
@@ -92,7 +94,7 @@ def main():
     loss_idx, loss_value, psnr_idx, psnr_value = [], [], [], []
     for epoch in range(epoch_num):
         for _, train_data in enumerate(train_loader):
-            x, y = train_data[0], train_data[1]
+            x, y = train_data[0].to(device), train_data[1].to(device)
             optimizer.zero_grad()
             xhat = net(y)
             loss = lossfn(x, xhat)
@@ -117,15 +119,15 @@ def main():
                 psnr_list = []
                 for val_idx, val_data in enumerate(val_loader):
                     net.eval()
-                    xval, yval = val_data[0], val_data[1]
+                    xval, yval = val_data[0].to(device), val_data[1].to(device)
                     with torch.no_grad():
                         xvalhat = net(yval)
 
                     mkdir('denoising/images/{:0>3}'.format(val_idx))
                     if current_step == validate_interval:
-                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_gt.tif'.format(val_idx, current_step), xval.squeeze().numpy().astype(np.float32))
-                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_noisy.tif'.format(val_idx, current_step), yval.squeeze().numpy().astype(np.float32))
-                    imageio.imwrite('denoising/images/{:0>3}/{:0>8}_denoised.tif'.format(val_idx, current_step), xvalhat.squeeze().numpy().astype(np.float32))
+                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_gt.tif'.format(val_idx, current_step), xval.squeeze().cpu().numpy().astype(np.float32))
+                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_noisy.tif'.format(val_idx, current_step), yval.squeeze().cpu().numpy().astype(np.float32))
+                    imageio.imwrite('denoising/images/{:0>3}/{:0>8}_denoised.tif'.format(val_idx, current_step), xvalhat.squeeze().cpu().numpy().astype(np.float32))
 
                     psnr = cal_psnr(xval, xvalhat)
                     psnr_list.append(psnr)
@@ -143,7 +145,7 @@ def main():
 
                 plt.subplot(122)
                 plt.plot(psnr_idx, psnr_value, color='black', marker='o')
-                plt.title('PSNR')
+                plt.title('psnr')
 
                 # savefig
                 fig.set_size_inches(20, 7)

@@ -1,28 +1,38 @@
 import numpy as np
+import platform
+import argparse
 import torch
+import random
 import math
 import imageio.v2 as imageio
 import os
+import time
+import sys
+import threading
 from torch.utils.data import DataLoader
 import torch.utils.data as data
-from torch.optim import lr_scheduler, AdamW
+import cv2
+from torch.optim import lr_scheduler, Adam, AdamW
 import matplotlib
 import matplotlib.pyplot as plt
 import torch.nn as nn
+import torch.nn.functional as F
+
+device = torch.device('cuda')
 
 matplotlib.use('Agg')
 
+SCALE = 4
 
 def mkdir(path):
     if not os.path.exists(path):
         os.makedirs(path)
 
 
-class Dataset_Denoise(data.Dataset):
-    def __init__(self, path, sigma=0.2):
-        super(Dataset_Denoise, self).__init__()
+class Dataset_SISR(data.Dataset):
+    def __init__(self, path):
+        super(Dataset_SISR, self).__init__()
         self.path = path
-        self.sigma = sigma
         self.list_image = []
         for item in os.listdir(path):
             if '.png' in item:
@@ -32,16 +42,16 @@ class Dataset_Denoise(data.Dataset):
     def __getitem__(self, index):
         x = imageio.imread(self.list_image[index], pilmode='L').astype(np.float32).reshape(1, 28, 28)
         x = x / x.max()
-        y = x + self.sigma * np.random.randn(*x.shape)
-        return torch.from_numpy(x).float(), torch.from_numpy(y).float()
+        return torch.from_numpy(x).float()
 
     def __len__(self):
         return len(self.list_image)
 
 
-class SimpleDenoiseNN(nn.Module):
+class SimpleSISRNN(nn.Module):
     def __init__(self):
-        super(SimpleDenoiseNN, self).__init__()
+        super(SimpleSISRNN, self).__init__()
+        self.up = nn.Upsample(scale_factor=SCALE, mode='bilinear', align_corners=False)
         self.input_layers = nn.Sequential(
             nn.Conv2d(in_channels=1, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
         )
@@ -55,12 +65,36 @@ class SimpleDenoiseNN(nn.Module):
         )
 
     def forward(self, x):
+        x = self.up(x)
         x = self.input_layers(x)
         y = self.hidden_layers(x)
         y += x
         y = self.output_layers(y)
         return y
 
+class SimpleSISRNNv2(nn.Module):
+    def __init__(self):
+        super(SimpleSISRNNv2, self).__init__()
+        self.input_layers = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+        self.hidden_layers = nn.Sequential(
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+        self.output_layers = nn.Sequential(
+            nn.Conv2d(in_channels=32, out_channels=SCALE**2, kernel_size=(3, 3), padding=(1, 1), bias=True),
+            nn.PixelShuffle(SCALE),
+            nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+
+    def forward(self, x):
+        x = self.input_layers(x)
+        y = self.hidden_layers(x)
+        y += x
+        y = self.output_layers(y)
+        return y
 
 def cal_psnr(img1, img2):
     img1 = img1.to(torch.float64)
@@ -72,14 +106,14 @@ def cal_psnr(img1, img2):
 
 
 def main():
-    mkdir('denoising')
+    mkdir('sisr')
     epoch_num = 4
     print_interval = 100
     validate_interval = 500
     savemodel_interval = 2000
-    train_loader = DataLoader(Dataset_Denoise('minist_dataset/train'), batch_size=4, num_workers=4, shuffle=True, drop_last=True, pin_memory=False)
-    val_loader = DataLoader(Dataset_Denoise('minist_dataset/val'), batch_size=1, num_workers=1, shuffle=False, drop_last=False, pin_memory=False)
-    net = SimpleDenoiseNN()
+    train_loader = DataLoader(Dataset_SISR('minist_dataset/train'), batch_size=4, num_workers=4, shuffle=True, drop_last=True, pin_memory=False)
+    val_loader = DataLoader(Dataset_SISR('minist_dataset/val'), batch_size=1, num_workers=1, shuffle=False, drop_last=False, pin_memory=False)
+    net = SimpleSISRNNv2().to(device)
     optim_params = []
     for k, v in net.named_parameters():
         if v.requires_grad:
@@ -92,7 +126,8 @@ def main():
     loss_idx, loss_value, psnr_idx, psnr_value = [], [], [], []
     for epoch in range(epoch_num):
         for _, train_data in enumerate(train_loader):
-            x, y = train_data[0], train_data[1]
+            x = train_data.to(device)
+            y = F.interpolate(x, size=(28 // SCALE, 28 // SCALE), mode='bilinear', align_corners=False)
             optimizer.zero_grad()
             xhat = net(y)
             loss = lossfn(x, xhat)
@@ -110,22 +145,23 @@ def main():
                 state_dict = net.state_dict()
                 for key, param in state_dict.items():
                     state_dict[key] = param
-                mkdir('denoising/model')
-                torch.save(state_dict, 'denoising/model/net_{:0>6}.pth'.format(current_step))
+                mkdir('sisr/model')
+                torch.save(state_dict, 'sisr/model/net_{:0>6}.pth'.format(current_step))
 
             if current_step % validate_interval == 0:
                 psnr_list = []
                 for val_idx, val_data in enumerate(val_loader):
                     net.eval()
-                    xval, yval = val_data[0], val_data[1]
+                    xval = val_data.to(device)
+                    yval = F.interpolate(xval, size=(28 // SCALE, 28 // SCALE), mode='bilinear', align_corners=False)
                     with torch.no_grad():
                         xvalhat = net(yval)
 
-                    mkdir('denoising/images/{:0>3}'.format(val_idx))
+                    mkdir('sisr/images/{:0>3}'.format(val_idx))
                     if current_step == validate_interval:
-                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_gt.tif'.format(val_idx, current_step), xval.squeeze().numpy().astype(np.float32))
-                        imageio.imwrite('denoising/images/{:0>3}/{:0>8}_noisy.tif'.format(val_idx, current_step), yval.squeeze().numpy().astype(np.float32))
-                    imageio.imwrite('denoising/images/{:0>3}/{:0>8}_denoised.tif'.format(val_idx, current_step), xvalhat.squeeze().numpy().astype(np.float32))
+                        imageio.imwrite('sisr/images/{:0>3}/{:0>8}_hr.tif'.format(val_idx, current_step), xval.squeeze().cpu().numpy().astype(np.float32))
+                        imageio.imwrite('sisr/images/{:0>3}/{:0>8}_lr.tif'.format(val_idx, current_step), yval.squeeze().cpu().numpy().astype(np.float32))
+                    imageio.imwrite('sisr/images/{:0>3}/{:0>8}_sr.tif'.format(val_idx, current_step), xvalhat.squeeze().cpu().numpy().astype(np.float32))
 
                     psnr = cal_psnr(xval, xvalhat)
                     psnr_list.append(psnr)
@@ -148,11 +184,10 @@ def main():
                 # savefig
                 fig.set_size_inches(20, 7)
                 try:
-                    fig.savefig('denoising/plot.png', format='png', transparent=False, dpi=100, pad_inches=0)
+                    fig.savefig('sisr/plot.png', format='png', transparent=False, dpi=100, pad_inches=0)
                 except OSError:  # builtins error
                     pass
                 plt.close()
-
 
 if __name__ == '__main__':
     main()

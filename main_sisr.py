@@ -70,6 +70,30 @@ class SimpleSISRNN(nn.Module):
         y = self.output_layers(y)
         return y
 
+class SimpleSISRNNv2(nn.Module):
+    def __init__(self):
+        super(SimpleSISRNNv2, self).__init__()
+        self.input_layers = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+        self.hidden_layers = nn.Sequential(
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+            nn.ReLU(),
+            nn.Conv2d(in_channels=32, out_channels=32, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+        self.output_layers = nn.Sequential(
+            nn.Conv2d(in_channels=32, out_channels=SCALE**2, kernel_size=(3, 3), padding=(1, 1), bias=True),
+            nn.PixelShuffle(SCALE),
+            nn.Conv2d(in_channels=1, out_channels=1, kernel_size=(3, 3), padding=(1, 1), bias=True),
+        )
+
+    def forward(self, x):
+        x = self.input_layers(x)
+        y = self.hidden_layers(x)
+        y += x
+        y = self.output_layers(y)
+        return y
+
 def cal_psnr(img1, img2):
     img1 = img1.to(torch.float64)
     img2 = img2.to(torch.float64)
@@ -87,7 +111,7 @@ def main():
     savemodel_interval = 2000
     train_loader = DataLoader(Dataset_SISR('minist_dataset/train'), batch_size=4, num_workers=4, shuffle=True, drop_last=True, pin_memory=False)
     val_loader = DataLoader(Dataset_SISR('minist_dataset/val'), batch_size=1, num_workers=1, shuffle=False, drop_last=False, pin_memory=False)
-    net = SimpleSISRNN()
+    net = SimpleSISRNNv2()
     optim_params = []
     for k, v in net.named_parameters():
         if v.requires_grad:
@@ -149,11 +173,11 @@ def main():
 
                 plt.subplot(121)
                 plt.plot(loss_idx, loss_value, color='black', marker='o')
-                plt.title('G_lr')
+                plt.title('loss')
 
                 plt.subplot(122)
                 plt.plot(psnr_idx, psnr_value, color='black', marker='o')
-                plt.title('D_lr')
+                plt.title('PSNR')
 
                 # savefig
                 fig.set_size_inches(20, 7)
